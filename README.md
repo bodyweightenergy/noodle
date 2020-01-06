@@ -2,7 +2,7 @@
 
 For when you need to parse incomplete I/O streams, where not all bytes are available at once (reading huge files, network streams, other I/O byte streams).
 
-This is mainly meant to work side-by-side with nom::bytes::streaming parser functions.
+This is mainly meant to work side-by-side with `nom::bytes::streaming` parser functions.
 
 ## What You Can Do
 

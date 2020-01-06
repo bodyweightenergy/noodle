@@ -1,4 +1,23 @@
-//! Provides endless byte stream parsing, compatible with nom v5.
+/*! 
+For [`nom`](https://docs.rs/nom)ing long streams of data.
+
+Provides continuous byte stream parsing utilities.
+
+```
+fn parse_fn(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    // ...
+}
+
+let reader = File::open("..."); // reader is anything that implements std::io::Read
+let alloc_size = 1000;  // Set custom allocation size
+let muncher = ReadMuncher::new(&reader, alloc_size, &parse_fn);
+
+for packet in &muncher {
+     // Do something with a packet/parcel, which is Vec<u8>.
+}
+
+```
+*/ 
 
 use thiserror::Error;
 use nom::{Err, IResult};
@@ -15,10 +34,39 @@ pub enum MunchError {
     ReadError(#[from] std::io::Error),
 }
 
-/// Continuous reads bytes from a `Read` implementor,
-/// parses that byte stream with the provided parse function,
-/// and iterates over the parsed slices.
-///
+/** Continuously reads bytes from a `Read` implementor,
+ parses that byte stream with the provided parser function,
+ and provides an iterator over the parsed slices/packets/parcels.
+
+ ```
+ use nom::bytes::streaming;
+ use nom::{Err, IResult, Needed};
+ use std::io::Cursor;
+ use std::result::Result;
+ # use noodle::ReadMuncher;
+
+ fn my_parse_function(input: &[u8]) -> IResult<&[u8], &[u8]> {
+     let (i, tag) = streaming::tag(&[0xff])(input)?;
+     let (remain, rest) = streaming::take_until(&[0xff][..])(i)?;
+     let blob_len = tag.len() + rest.len();
+     let blob = &input[..blob_len];
+     Ok((remain, blob))
+ }
+ 
+ # fn main() {
+
+ let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
+
+ let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, &my_parse_function).collect();
+
+ assert_eq!(munched.len(), 3);
+ assert_eq!(munched[0], vec![0xff, 1]);
+ assert_eq!(munched[1], vec![0xff, 2, 2]);
+ assert_eq!(munched[2], vec![0xff, 3, 3, 3]);
+
+ # }
+ ```
+*/
 pub struct ReadMuncher<'a, 'b> {
     reader: &'a mut dyn Read,
     buffer: Vec<u8>,
@@ -190,13 +238,7 @@ mod test {
 
         let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
 
-        let mut munched: Vec<Vec<u8>> = vec![];
-        let muncher = ReadMuncher::new(&mut read, 5, &my_parse_function);
-
-        for m in muncher {
-            println!("Found: {:?}", m);
-            munched.push(m);
-        }
+        let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, &my_parse_function).collect();
 
         assert_eq!(munched.len(), 3);
         assert_eq!(munched[0], vec![0xff, 1]);

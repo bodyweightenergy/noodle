@@ -1,11 +1,19 @@
 //! Provides endless byte stream parsing, compatible with nom v5.
 
-use failure::Error;
+use thiserror::Error;
 use nom::{Err, IResult};
 use std::io::Read;
 
 /// Type alias for parse function
 pub type ParseFn = dyn Fn(&[u8]) -> IResult<&[u8], &[u8]>;
+
+/// Error types for this library
+#[derive(Debug, Error)]
+pub enum MunchError {
+    /// Error while reading
+    #[error("Error reading from Read object")]
+    ReadError(#[from] std::io::Error),
+}
 
 /// Continuous reads bytes from a `Read` implementor,
 /// parses that byte stream with the provided parse function,
@@ -95,7 +103,7 @@ impl<'a, 'b> Iterator for ReadMuncher<'a, 'b> {
 }
 
 /// Removes used bytes from buffer, and shifts everything to start.
-fn resize_no_alloc(muncher: &mut ReadMuncher) -> Result<Option<Vec<u8>>, Error> {
+fn resize_no_alloc(muncher: &mut ReadMuncher) -> Result<Option<Vec<u8>>, MunchError> {
     let full_len = muncher.buffer.len();
     muncher.buffer.drain(0..muncher.parse_location);
     muncher.buffer.resize_with(full_len, || 0);
@@ -115,7 +123,7 @@ fn resize_no_alloc(muncher: &mut ReadMuncher) -> Result<Option<Vec<u8>>, Error> 
 }
 
 /// Extends the buffer to allow storing more bytes.
-fn resize_alloc(muncher: &mut ReadMuncher) -> Result<Option<Vec<u8>>, Error> {
+fn resize_alloc(muncher: &mut ReadMuncher) -> Result<Option<Vec<u8>>, MunchError> {
     let old_len = muncher.buffer.len();
     muncher
         .buffer

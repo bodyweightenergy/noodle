@@ -21,40 +21,7 @@ use anyhow::Error;
 use std::io::Read;
 use thiserror;
 
-/// Type alias for parse function
-// pub type ParseFn<T> = dyn Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>;
-
-// pub trait PFn<T>: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error> {}
-// pub type ParseFn<T> = (&[u8], bool) -> Result<MunchOutput<T>, Error>;
-
-// pub trait Decode {
-//     type Item;
-//     fn decode<E: std::error::Error>(&self, input: MunchInput) -> Result<MunchOutput<Self::Item>, E>;
-
-// }
-
-// pub struct MunchInput<'a> {
-//     pub bytes: &'a [u8],
-//     pub is_eof: bool,
-// }
-
-// impl<'a> MunchInput<'a> {
-//     pub fn normal(bytes: &'a [u8]) -> Self {
-//         Self {
-//             bytes,
-//             is_eof: false,
-//         }
-//     }
-
-//     pub fn eof(bytes: &'a [u8]) -> Self {
-//         Self {
-//             bytes,
-//             is_eof: true,
-//         }
-//     }
-// }
-
-pub type MunchOutput<T> = Option<(usize, T)>;
+pub type MunchOutput<T> = Option<(T, usize)>;
 
 /// Error types for this library
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +50,7 @@ let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, |b, _| {
         let skip = b[1] as usize + 1;
         if b.len() > skip {
             let blob = &b[..skip];
-            Ok(Some((skip, blob.to_owned())))
+            Ok(Some((blob.to_owned(), skip)))
         } else {
             Ok(None)
         }
@@ -199,7 +166,7 @@ where
             match parse_result {
                 Ok(r) => match r {
                     // Parse complete
-                    Some((n, item)) => {
+                    Some((item, n)) => {
                         self.parse_location += n;
                         return Some(item);
                     }
@@ -210,7 +177,7 @@ where
                                 Ok(r) => {
                                     if let Some(last) = r {
                                         match (self.parse_fn)(&last, true) {
-                                            Ok(Some((_, item))) => return Some(item),
+                                            Ok(Some((item, _))) => return Some(item),
                                             _ => return None,
                                         }
                                     }
@@ -222,7 +189,7 @@ where
                                 Ok(r) => {
                                     if let Some(last) = r {
                                         match (self.parse_fn)(&last, true) {
-                                            Ok(Some((_, item))) => return Some(item),
+                                            Ok(Some((item, _))) => return Some(item),
                                             _ => return None,
                                         }
                                     }
@@ -293,7 +260,7 @@ mod test {
                 let skip = bytes[1] as usize + 1;
                 if bytes.len() > skip {
                     let blob = &bytes[..skip];
-                    Ok(Some((skip, blob.to_owned())))
+                    Ok(Some((blob.to_owned(), skip)))
                 } else {
                     Ok(None)
                 }
@@ -324,7 +291,7 @@ mod test {
                 let skip = b[1] as usize + 1;
                 if b.len() > skip {
                     let blob = &b[..skip];
-                    Ok(Some((skip, blob.to_owned())))
+                    Ok(Some((blob.to_owned(), skip)))
                 } else {
                     Ok(None)
                 }

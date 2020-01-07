@@ -23,16 +23,6 @@ use thiserror;
 
 pub type MunchOutput<T> = Option<(T, usize)>;
 
-/// Error types for this library
-#[derive(Debug, thiserror::Error)]
-pub enum MunchError {
-    /// Error while reading
-    #[error("Error reading from Read object")]
-    Read(#[from] std::io::Error),
-
-    #[error("Unknown")]
-    Unknown,
-}
 
 /** Continuously reads bytes from a `Read` implementor,
  parses that byte stream with the provided parser function,
@@ -100,7 +90,10 @@ where
     ///
     /// ## parse_fn
     ///
-    /// The parse function invoked over the read buffer.
+    /// The parse function called against the read buffer. This can be a static function or a closure.
+    /// 
+    /// The first parameter is a reference to the entire read buffer. 
+    /// The second parameter is a boolean signal if EOF is received (no more bytes available to read).
     ///
     pub fn new(reader: &'a mut dyn Read, alloc_size: usize, parse_fn: F) -> Self {
         Self {
@@ -200,7 +193,7 @@ where
                     }
                 },
                 Err(e) => {
-                    eprintln!("Malformed input. {:?}", e);
+                    eprintln!("Parse Error: {:?}", e);
                     return None;
                 }
             }

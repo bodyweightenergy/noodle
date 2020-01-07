@@ -1,83 +1,124 @@
-/*! 
-For [`nom`](https://docs.rs/nom)ing long streams of data.
+/*!
 
-Provides continuous byte stream parsing utilities.
+Provides byte stream parsing utilities.
 
-```
-fn parse_fn(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    // ...
-}
+```rust,ignore
 
-let reader = File::open("..."); // reader is anything that implements std::io::Read
+let reader = File::open("..."); // reader is anything that implements io::Read
 let alloc_size = 1000;  // Set custom allocation size
-let muncher = ReadMuncher::new(&reader, alloc_size, &parse_fn);
+let muncher = ReadMuncher::<DataItem, _>::new(&reader, alloc_size, |bytes, is_eof| {
+    // parse function here
+});
 
 for packet in &muncher {
-     // Do something with a packet/parcel, which is Vec<u8>.
+     // packet is DataItem
 }
 
 ```
-*/ 
+*/
 
-use thiserror::Error;
-use nom::{Err, IResult};
+use anyhow::Error;
 use std::io::Read;
+use thiserror;
 
 /// Type alias for parse function
-pub type ParseFn = dyn Fn(&[u8]) -> IResult<&[u8], &[u8]>;
+// pub type ParseFn<T> = dyn Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>;
+
+// pub trait PFn<T>: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error> {}
+// pub type ParseFn<T> = (&[u8], bool) -> Result<MunchOutput<T>, Error>;
+
+// pub trait Decode {
+//     type Item;
+//     fn decode<E: std::error::Error>(&self, input: MunchInput) -> Result<MunchOutput<Self::Item>, E>;
+
+// }
+
+// pub struct MunchInput<'a> {
+//     pub bytes: &'a [u8],
+//     pub is_eof: bool,
+// }
+
+// impl<'a> MunchInput<'a> {
+//     pub fn normal(bytes: &'a [u8]) -> Self {
+//         Self {
+//             bytes,
+//             is_eof: false,
+//         }
+//     }
+
+//     pub fn eof(bytes: &'a [u8]) -> Self {
+//         Self {
+//             bytes,
+//             is_eof: true,
+//         }
+//     }
+// }
+
+pub type MunchOutput<T> = Option<(usize, T)>;
 
 /// Error types for this library
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum MunchError {
     /// Error while reading
     #[error("Error reading from Read object")]
-    ReadError(#[from] std::io::Error),
+    Read(#[from] std::io::Error),
+
+    #[error("Unknown")]
+    Unknown,
 }
 
 /** Continuously reads bytes from a `Read` implementor,
  parses that byte stream with the provided parser function,
  and provides an iterator over the parsed slices/packets/parcels.
 
- ```
- use nom::bytes::streaming;
- use nom::{Err, IResult, Needed};
- use std::io::Cursor;
- use std::result::Result;
- # use noodle::ReadMuncher;
+```rust
+# use noodle::ReadMuncher;
+# fn main() {
+use std::io::Cursor;
 
- fn my_parse_function(input: &[u8]) -> IResult<&[u8], &[u8]> {
-     let (i, tag) = streaming::tag(&[0xff])(input)?;
-     let (remain, rest) = streaming::take_until(&[0xff][..])(i)?;
-     let blob_len = tag.len() + rest.len();
-     let blob = &input[..blob_len];
-     Ok((remain, blob))
- }
- 
- # fn main() {
+let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
 
- let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
+let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, |b, _| {
+    if b.len() >= 2 {
+        let skip = b[1] as usize + 1;
+        if b.len() > skip {
+            let blob = &b[..skip];
+            Ok(Some((skip, blob.to_owned())))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+})
+.collect();
 
- let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, &my_parse_function).collect();
-
- assert_eq!(munched.len(), 3);
- assert_eq!(munched[0], vec![0xff, 1]);
- assert_eq!(munched[1], vec![0xff, 2, 2]);
- assert_eq!(munched[2], vec![0xff, 3, 3, 3]);
+assert_eq!(munched.len(), 3);
+assert_eq!(munched[0], vec![0xff, 1]);
+assert_eq!(munched[1], vec![0xff, 2, 2]);
+assert_eq!(munched[2], vec![0xff, 3, 3, 3]);
 
  # }
  ```
 */
-pub struct ReadMuncher<'a, 'b> {
+pub struct ReadMuncher<'a, T, F>
+where
+    F: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>,
+{
     reader: &'a mut dyn Read,
     buffer: Vec<u8>,
     parse_location: usize,
     alloc_size: usize,
-    parse_fn: &'b ParseFn, //Box<ParseFn>,
+    // parse_fn: &'b ParseFn<T>,
+    parse_fn: F,
     complete: bool,
     read_end_location: usize,
 }
 
-impl<'a, 'b> ReadMuncher<'a, 'b> {
+impl<'a, T, F> ReadMuncher<'a, T, F>
+where
+    F: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>,
+{
     /// Starts a new `ReadMuncher` instance.
     ///
     /// ## reader
@@ -94,7 +135,7 @@ impl<'a, 'b> ReadMuncher<'a, 'b> {
     ///
     /// The parse function invoked over the read buffer.
     ///
-    pub fn new(reader: &'a mut dyn Read, alloc_size: usize, parse_fn: &'b ParseFn) -> Self {
+    pub fn new(reader: &'a mut dyn Read, alloc_size: usize, parse_fn: F) -> Self {
         Self {
             reader,
             alloc_size,
@@ -105,42 +146,92 @@ impl<'a, 'b> ReadMuncher<'a, 'b> {
             read_end_location: 0,
         }
     }
+
+    /// Removes used bytes from buffer, and shifts everything to start.
+    fn resize_no_alloc(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        let full_len = self.buffer.len();
+        self.buffer.drain(0..self.parse_location);
+        self.buffer.resize_with(full_len, || 0);
+        self.read_end_location -= self.parse_location;
+        let num_new_bytes = self
+            .reader
+            .read(&mut self.buffer[(full_len - self.parse_location)..])?;
+        self.read_end_location += num_new_bytes;
+        if num_new_bytes == 0 {
+            let blob = &self.buffer[..self.read_end_location];
+            self.complete = true;
+            Ok(Some(blob.to_owned()))
+        } else {
+            self.parse_location = 0;
+            Ok(None)
+        }
+    }
+
+    /// Extends the buffer to allow storing more bytes.
+    fn resize_alloc(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        let old_len = self.buffer.len();
+        self.buffer.resize_with(old_len + self.alloc_size, || 0);
+        let num_new_bytes = self.reader.read(&mut self.buffer[old_len..])?;
+        self.read_end_location += num_new_bytes;
+        if num_new_bytes == 0 {
+            let blob = &self.buffer[..self.read_end_location];
+            self.complete = true;
+            Ok(Some(blob.to_owned()))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
-impl<'a, 'b> Iterator for ReadMuncher<'a, 'b> {
-    type Item = Vec<u8>;
+impl<'a, T, F> Iterator for ReadMuncher<'a, T, F>
+where
+    F: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>,
+{
+    type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.complete == true {
             return None;
         }
         loop {
-            match (self.parse_fn)(&self.buffer[self.parse_location..]) {
-                Ok((_, blob)) => {
-                    self.parse_location += blob.len();
-                    return Some(blob.to_owned());
-                }
-                Err(Err::Incomplete(_)) => {
-                    if self.parse_location != 0 {
-                        match resize_no_alloc(self) {
-                            Ok(r) => {
-                                if r.is_some() {
-                                    return r;
+            // let buf: &'b [u8] = &self.buffer[self.parse_location..];
+            let parse_result = (self.parse_fn)(&self.buffer[self.parse_location..], false);
+            match parse_result {
+                Ok(r) => match r {
+                    // Parse complete
+                    Some((n, item)) => {
+                        self.parse_location += n;
+                        return Some(item);
+                    }
+                    // Parse incomplete
+                    None => {
+                        if self.parse_location != 0 {
+                            match self.resize_no_alloc() {
+                                Ok(r) => {
+                                    if let Some(last) = r {
+                                        match (self.parse_fn)(&last, true) {
+                                            Ok(Some((_, item))) => return Some(item),
+                                            _ => return None,
+                                        }
+                                    }
                                 }
+                                Err(_) => return None,
                             }
-                            Err(_) => return None,
-                        }
-                    } else {
-                        match resize_alloc(self) {
-                            Ok(r) => {
-                                if r.is_some() {
-                                    return r;
+                        } else {
+                            match self.resize_alloc() {
+                                Ok(r) => {
+                                    if let Some(last) = r {
+                                        match (self.parse_fn)(&last, true) {
+                                            Ok(Some((_, item))) => return Some(item),
+                                            _ => return None,
+                                        }
+                                    }
                                 }
+                                Err(_) => return None,
                             }
-                            Err(_) => return None,
                         }
                     }
-                }
+                },
                 Err(e) => {
                     eprintln!("Malformed input. {:?}", e);
                     return None;
@@ -150,95 +241,98 @@ impl<'a, 'b> Iterator for ReadMuncher<'a, 'b> {
     }
 }
 
-/// Removes used bytes from buffer, and shifts everything to start.
-fn resize_no_alloc(muncher: &mut ReadMuncher) -> Result<Option<Vec<u8>>, MunchError> {
-    let full_len = muncher.buffer.len();
-    muncher.buffer.drain(0..muncher.parse_location);
-    muncher.buffer.resize_with(full_len, || 0);
-    muncher.read_end_location -= muncher.parse_location;
-    let num_new_bytes = muncher
-        .reader
-        .read(&mut muncher.buffer[(full_len - muncher.parse_location)..])?;
-    muncher.read_end_location += num_new_bytes;
-    if num_new_bytes == 0 {
-        let blob = &muncher.buffer[..muncher.read_end_location];
-        muncher.complete = true;
-        Ok(Some(blob.to_owned()))
-    } else {
-        muncher.parse_location = 0;
-        Ok(None)
-    }
-}
+// /// Removes used bytes from buffer, and shifts everything to start.
+// fn resize_no_alloc(muncher: &mut ReadMuncher<T>) -> Result<Option<Vec<u8>>, MunchError> {
+//     let full_len = muncher.buffer.len();
+//     muncher.buffer.drain(0..muncher.parse_location);
+//     muncher.buffer.resize_with(full_len, || 0);
+//     muncher.read_end_location -= muncher.parse_location;
+//     let num_new_bytes = muncher
+//         .reader
+//         .read(&mut muncher.buffer[(full_len - muncher.parse_location)..])?;
+//     muncher.read_end_location += num_new_bytes;
+//     if num_new_bytes == 0 {
+//         let blob = &muncher.buffer[..muncher.read_end_location];
+//         muncher.complete = true;
+//         Ok(Some(blob.to_owned()))
+//     } else {
+//         muncher.parse_location = 0;
+//         Ok(None)
+//     }
+// }
 
-/// Extends the buffer to allow storing more bytes.
-fn resize_alloc(muncher: &mut ReadMuncher) -> Result<Option<Vec<u8>>, MunchError> {
-    let old_len = muncher.buffer.len();
-    muncher
-        .buffer
-        .resize_with(old_len + muncher.alloc_size, || 0);
-    let num_new_bytes = muncher.reader.read(&mut muncher.buffer[old_len..])?;
-    muncher.read_end_location += num_new_bytes;
-    if num_new_bytes == 0 {
-        let blob = &muncher.buffer[..muncher.read_end_location];
-        muncher.complete = true;
-        Ok(Some(blob.to_owned()))
-    } else {
-        Ok(None)
-    }
-}
+// /// Extends the buffer to allow storing more bytes.
+// fn resize_alloc(muncher: &mut ReadMuncher<_>) -> Result<Option<Vec<u8>>, MunchError> {
+//     let old_len = muncher.buffer.len();
+//     muncher
+//         .buffer
+//         .resize_with(old_len + muncher.alloc_size, || 0);
+//     let num_new_bytes = muncher.reader.read(&mut muncher.buffer[old_len..])?;
+//     muncher.read_end_location += num_new_bytes;
+//     if num_new_bytes == 0 {
+//         let blob = &muncher.buffer[..muncher.read_end_location];
+//         muncher.complete = true;
+//         Ok(Some(blob.to_owned()))
+//     } else {
+//         Ok(None)
+//     }
+// }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use nom::bytes::streaming;
-    use std::io::Cursor;
 
-    const TAG_BYTES: [u8; 3] = [1, 2, 3];
-
-    fn parse_one_blob<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
-        // println!("Entered: parse_one_blob({:?})", input);
-        let (i, tag) = streaming::tag(&TAG_BYTES)(input)?;
-        let (remain, rest) = streaming::take_until(&TAG_BYTES[..])(i)?;
-        let blob_len = tag.len() + rest.len();
-        let blob = &input[..blob_len];
-        Ok((remain, blob))
-    }
-
+    /// Tests passing static function as parser.
     #[test]
-    pub fn run_iter() {
-        println!("TEST - run_iter:");
-        let mut file = Cursor::new(vec![
-            1u8, 2, 3, 11, 11, 11, 1, 2, 3, 22, 22, 22, 22, 22, 22, 22, 1, 2, 3, 33, 33, 33, 33, 1,
-            2, 3, 44, 44, 44, 1, 2, 3, 55, 55, 55, 55, 55, 55, 1, 2, 3, 66, 1u8, 2, 3, 77, 77, 1,
-            2, 3, 88, 88, 88, 88, 88, 88, 88, 1, 2, 3, 99, 99, 99, 99,
-        ]);
-
-        let muncher = ReadMuncher::new(&mut file, 5, &parse_one_blob);
-
-        for blob in muncher {
-            println!("Found blob: {:?}", blob);
-        }
-    }
-
-    #[test]
-    pub fn doc_test() {
-        println!("doc_test");
-        use nom::bytes::streaming::*;
-        use nom::{Err, IResult, Needed};
+    pub fn static_fn() {
         use std::io::Cursor;
         use std::result::Result;
 
-        fn my_parse_function(input: &[u8]) -> IResult<&[u8], &[u8]> {
-            let (i, tag) = streaming::tag(&[0xff])(input)?;
-            let (remain, rest) = streaming::take_until(&[0xff][..])(i)?;
-            let blob_len = tag.len() + rest.len();
-            let blob = &input[..blob_len];
-            Ok((remain, blob))
+        fn my_parse_function(bytes: &[u8], _: bool) -> Result<MunchOutput<Vec<u8>>, Error> {
+            if bytes.len() >= 2 {
+                let skip = bytes[1] as usize + 1;
+                if bytes.len() > skip {
+                    let blob = &bytes[..skip];
+                    Ok(Some((skip, blob.to_owned())))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(None)
+            }
         }
 
         let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
 
-        let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, &my_parse_function).collect();
+        let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, my_parse_function).collect();
+
+        assert_eq!(munched.len(), 3);
+        assert_eq!(munched[0], vec![0xff, 1]);
+        assert_eq!(munched[1], vec![0xff, 2, 2]);
+        assert_eq!(munched[2], vec![0xff, 3, 3, 3]);
+    }
+
+    /// Tests passing closure as parser function.
+    #[test]
+    pub fn closure() {
+        use std::io::Cursor;
+
+        let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
+
+        let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, |b, _| {
+            if b.len() >= 2 {
+                let skip = b[1] as usize + 1;
+                if b.len() > skip {
+                    let blob = &b[..skip];
+                    Ok(Some((skip, blob.to_owned())))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(None)
+            }
+        })
+        .collect();
 
         assert_eq!(munched.len(), 3);
         assert_eq!(munched[0], vec![0xff, 1]);

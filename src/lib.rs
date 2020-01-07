@@ -208,43 +208,6 @@ where
     }
 }
 
-// /// Removes used bytes from buffer, and shifts everything to start.
-// fn resize_no_alloc(muncher: &mut ReadMuncher<T>) -> Result<Option<Vec<u8>>, MunchError> {
-//     let full_len = muncher.buffer.len();
-//     muncher.buffer.drain(0..muncher.parse_location);
-//     muncher.buffer.resize_with(full_len, || 0);
-//     muncher.read_end_location -= muncher.parse_location;
-//     let num_new_bytes = muncher
-//         .reader
-//         .read(&mut muncher.buffer[(full_len - muncher.parse_location)..])?;
-//     muncher.read_end_location += num_new_bytes;
-//     if num_new_bytes == 0 {
-//         let blob = &muncher.buffer[..muncher.read_end_location];
-//         muncher.complete = true;
-//         Ok(Some(blob.to_owned()))
-//     } else {
-//         muncher.parse_location = 0;
-//         Ok(None)
-//     }
-// }
-
-// /// Extends the buffer to allow storing more bytes.
-// fn resize_alloc(muncher: &mut ReadMuncher<_>) -> Result<Option<Vec<u8>>, MunchError> {
-//     let old_len = muncher.buffer.len();
-//     muncher
-//         .buffer
-//         .resize_with(old_len + muncher.alloc_size, || 0);
-//     let num_new_bytes = muncher.reader.read(&mut muncher.buffer[old_len..])?;
-//     muncher.read_end_location += num_new_bytes;
-//     if num_new_bytes == 0 {
-//         let blob = &muncher.buffer[..muncher.read_end_location];
-//         muncher.complete = true;
-//         Ok(Some(blob.to_owned()))
-//     } else {
-//         Ok(None)
-//     }
-// }
-
 #[cfg(test)]
 mod test {
     use super::*;

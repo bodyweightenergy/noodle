@@ -21,6 +21,7 @@ use anyhow::Error;
 use std::io::Read;
 use thiserror;
 
+/// Output type for `ReadMuncher` parse function
 pub type MunchOutput<T> = Option<(T, usize)>;
 
 
@@ -93,7 +94,7 @@ where
     /// The parse function called against the read buffer. This can be a static function or a closure.
     /// 
     /// The first parameter is a reference to the entire read buffer. 
-    /// The second parameter is a boolean signal if EOF is received (no more bytes available to read).
+    /// The second parameter is a boolean, which signals EOF (no more bytes available to read).
     ///
     pub fn new(reader: &'a mut dyn Read, alloc_size: usize, parse_fn: F) -> Self {
         Self {

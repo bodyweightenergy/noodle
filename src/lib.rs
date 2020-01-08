@@ -1,6 +1,6 @@
 /*!
 
-Provides byte stream parsing utilities.
+Provides synchronous byte stream parsing utilities.
 
 ```rust,ignore
 
@@ -33,7 +33,7 @@ pub type MunchOutput<T> = Option<(T, usize)>;
 
 ```rust
 # use noodle::ReadMuncher;
-# fn main() {
+
 use std::io::Cursor;
 
 let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
@@ -58,32 +58,30 @@ assert_eq!(munched[0], vec![0xff, 1]);
 assert_eq!(munched[1], vec![0xff, 2, 2]);
 assert_eq!(munched[2], vec![0xff, 3, 3, 3]);
 
- # }
  ```
 */
-pub struct ReadMuncher<'a, T, F>
+pub struct ByteMuncher<T, F>
 where
     F: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>,
 {
-    reader: &'a mut dyn Read,
+    source: Box<dyn Iterator<Item = u8>>,
     buffer: Vec<u8>,
     parse_location: usize,
     alloc_size: usize,
-    // parse_fn: &'b ParseFn<T>,
     parse_fn: F,
     complete: bool,
     read_end_location: usize,
 }
 
-impl<'a, T, F> ReadMuncher<'a, T, F>
+impl<T, F> ByteMuncher<T, F>
 where
     F: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>,
 {
-    /// Starts a new `ReadMuncher` instance.
+    /// Creates a new `ByteMuncher` instance from a boxed byte iterator.
     ///
-    /// ### reader
+    /// ### source
     ///
-    /// The `Read` implementor to be read for bytes.
+    /// The boxed `Iterator<Item = u8>` object used a bytes source.
     ///
     /// ### alloc_size
     ///
@@ -109,9 +107,10 @@ where
     /// Err(...)  // Error occurred. Iterator panics and prints to stderr
     ///
     /// ```
-    pub fn new(reader: &'a mut dyn Read, alloc_size: usize, parse_fn: F) -> Self {
+    pub fn new(source: Box<dyn Iterator<Item = u8>>, alloc_size: usize, parse_fn: F) -> Self 
+     {
         Self {
-            reader,
+            source,
             alloc_size,
             buffer: Vec::with_capacity(alloc_size),
             parse_location: 0,
@@ -121,6 +120,15 @@ where
         }
     }
 
+    /// Creates a new `ByteMuncher` from a boxed `Read` object.
+    pub fn from_read(source: Box<dyn Read>, alloc_size: usize, parse_fn: F) -> Self {
+        Self::new(
+            Box::new(source.bytes().map(|r| r.unwrap())),
+            alloc_size,
+            parse_fn
+        )
+    }
+
     /// Removes used bytes from buffer, and shifts everything to start.
     /// Returns remaining buffer bytes when at EOF.
     fn resize_no_alloc(&mut self) -> Result<Option<Vec<u8>>, Error> {
@@ -128,9 +136,19 @@ where
         self.buffer.drain(0..self.parse_location);
         self.buffer.resize_with(full_len, || 0);
         self.read_end_location -= self.parse_location;
-        let num_new_bytes = self
-            .reader
-            .read(&mut self.buffer[(full_len - self.parse_location)..])?;
+        // let num_new_bytes = self
+        //     .reader
+        //     .read(&mut self.buffer[(full_len - self.parse_location)..])?;
+        let mut num_new_bytes = 0;
+        for i in (&mut self.buffer[(full_len - self.parse_location)..]).iter_mut() {
+            match self.source.next() {
+                Some(b) => {
+                    *i = b;
+                    num_new_bytes += 1;
+                },
+                None => continue,
+            }
+        }
         self.read_end_location += num_new_bytes;
         if num_new_bytes == 0 {
             let blob = &self.buffer[..self.read_end_location];
@@ -147,7 +165,17 @@ where
     fn resize_alloc(&mut self) -> Result<Option<Vec<u8>>, Error> {
         let old_len = self.buffer.len();
         self.buffer.resize_with(old_len + self.alloc_size, || 0);
-        let num_new_bytes = self.reader.read(&mut self.buffer[old_len..])?;
+        // let num_new_bytes = self.reader.read(&mut self.buffer[old_len..])?;
+        let mut num_new_bytes = 0;
+        for i in (&mut self.buffer[old_len..]).iter_mut() {
+            match self.source.next() {
+                Some(b) => {
+                    *i = b;
+                    num_new_bytes += 1;
+                },
+                None => continue,
+            }
+        }
         self.read_end_location += num_new_bytes;
         if num_new_bytes == 0 {
             let blob = &self.buffer[..self.read_end_location];
@@ -159,18 +187,17 @@ where
     }
 }
 
-impl<'a, T, F> Iterator for ReadMuncher<'a, T, F>
+impl<T, F> Iterator for ByteMuncher<T, F>
 where
     F: Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>,
 {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.complete == true {
+        if self.complete {
             return None;
         }
         loop {
-            // let buf: &'b [u8] = &self.buffer[self.parse_location..];
             let parse_result = (self.parse_fn)(&self.buffer[self.parse_location..], false);
             match parse_result {
                 // Complete parse
@@ -227,8 +254,6 @@ mod test {
     /// Tests passing static function as parser.
     #[test]
     pub fn static_fn() {
-        use std::io::Cursor;
-        use std::result::Result;
 
         fn my_parse_function(bytes: &[u8], _: bool) -> Result<MunchOutput<Vec<u8>>, Error> {
             if bytes.len() >= 2 {
@@ -244,9 +269,9 @@ mod test {
             }
         }
 
-        let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
+        let bytes = vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3];
 
-        let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, my_parse_function).collect();
+        let munched: Vec<Vec<u8>> = ByteMuncher::new(Box::new(bytes.into_iter()), 5, my_parse_function).collect();
 
         assert_eq!(munched.len(), 3);
         assert_eq!(munched[0], vec![0xff, 1]);
@@ -257,11 +282,39 @@ mod test {
     /// Tests passing closure as parser function.
     #[test]
     pub fn closure() {
+
+        let read = vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3];
+
+        let munched: Vec<Vec<u8>> = ByteMuncher::new(Box::new(read.into_iter()), 5, |b, _| {
+            if b.len() >= 2 {
+                let skip = b[1] as usize + 1;
+                if b.len() > skip {
+                    let blob = &b[..skip];
+                    Ok(Some((blob.to_owned(), skip)))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(None)
+            }
+        })
+        .collect();
+
+        assert_eq!(munched.len(), 3);
+        assert_eq!(munched[0], vec![0xff, 1]);
+        assert_eq!(munched[1], vec![0xff, 2, 2]);
+        assert_eq!(munched[2], vec![0xff, 3, 3, 3]);
+    }
+
+    /// Test using Read as source.
+    #[test]
+    pub fn read() {
+
         use std::io::Cursor;
+        
+        let read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
 
-        let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
-
-        let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, |b, _| {
+        let munched: Vec<Vec<u8>> = ByteMuncher::from_read(Box::new(read), 5, |b, _| {
             if b.len() >= 2 {
                 let skip = b[1] as usize + 1;
                 if b.len() > skip {

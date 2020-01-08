@@ -21,11 +21,15 @@ use anyhow::Error;
 use std::io::Read;
 
 /// Output type for `ReadMuncher` parse function
+/// 
+/// `T` is the iterator output type (e.g. `Packet` or `Frame` structs).
+/// 
+/// `usize` is the number of bytes consumed to created the output type.
 pub type MunchOutput<T> = Option<(T, usize)>;
 
 /** Continuously reads bytes from a `Read` implementor,
  parses that byte stream with the provided parser function,
- and provides an iterator over the parsed slices/packets/parcels.
+ and provides an iterator over the parsed slices/packets/frames.
 
 ```rust
 # use noodle::ReadMuncher;

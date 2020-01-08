@@ -19,11 +19,9 @@ for packet in &muncher {
 
 use anyhow::Error;
 use std::io::Read;
-use thiserror;
 
 /// Output type for `ReadMuncher` parse function
 pub type MunchOutput<T> = Option<(T, usize)>;
-
 
 /** Continuously reads bytes from a `Read` implementor,
  parses that byte stream with the provided parser function,
@@ -79,23 +77,34 @@ where
 {
     /// Starts a new `ReadMuncher` instance.
     ///
-    /// ## reader
+    /// ### reader
     ///
     /// The `Read` implementor to be read for bytes.
     ///
-    /// ## alloc_size
+    /// ### alloc_size
     ///
-    /// How many more bytes to allocate at end of the read buffer when existing bytes not sufficient for parsing.
-    /// Currently, there's no limit to how big the buffer can get.
-    /// Also, sets initial size of read buffer.
+    /// Internal buffer allocation increment size.
     ///
-    /// ## parse_fn
+    /// This sets the initial buffer size, and size increase increments when necessary.
     ///
-    /// The parse function called against the read buffer. This can be a static function or a closure.
-    /// 
-    /// The first parameter is a reference to the entire read buffer. 
+    /// ### parse_fn
+    ///
+    /// The parse function called against the read buffer. This can be a static function or a closure, with signature `Fn(&[u8], bool) -> Result<MunchOutput<T>, Error>`.
+    ///
+    /// The first parameter is a reference to the unconsumed slice of the read buffer.
     /// The second parameter is a boolean, which signals EOF (no more bytes available to read).
     ///
+    /// The return type is used internally to consume/step forward. Below is some example return values and what they do:
+    ///
+    /// ```ignore
+    ///
+    /// Ok(Some((item, 12)))  // 'item' is returned, buffer drains 12 bytes
+    ///
+    /// Ok(None)  // Not enough bytes, keep trying
+    ///
+    /// Err(...)  // Error occurred. Iterator panics and prints to stderr
+    ///
+    /// ```
     pub fn new(reader: &'a mut dyn Read, alloc_size: usize, parse_fn: F) -> Self {
         Self {
             reader,
@@ -109,6 +118,7 @@ where
     }
 
     /// Removes used bytes from buffer, and shifts everything to start.
+    /// Returns remaining buffer bytes when at EOF.
     fn resize_no_alloc(&mut self) -> Result<Option<Vec<u8>>, Error> {
         let full_len = self.buffer.len();
         self.buffer.drain(0..self.parse_location);
@@ -129,6 +139,7 @@ where
     }
 
     /// Extends the buffer to allow storing more bytes.
+    /// Returns remaining buffer bytes when at EOF.
     fn resize_alloc(&mut self) -> Result<Option<Vec<u8>>, Error> {
         let old_len = self.buffer.len();
         self.buffer.resize_with(old_len + self.alloc_size, || 0);
@@ -158,43 +169,46 @@ where
             // let buf: &'b [u8] = &self.buffer[self.parse_location..];
             let parse_result = (self.parse_fn)(&self.buffer[self.parse_location..], false);
             match parse_result {
-                Ok(r) => match r {
-                    // Parse complete
-                    Some((item, n)) => {
-                        self.parse_location += n;
-                        return Some(item);
-                    }
-                    // Parse incomplete
-                    None => {
-                        if self.parse_location != 0 {
-                            match self.resize_no_alloc() {
-                                Ok(r) => {
-                                    if let Some(last) = r {
-                                        match (self.parse_fn)(&last, true) {
-                                            Ok(Some((item, _))) => return Some(item),
-                                            _ => return None,
-                                        }
+                // Complete parse
+                Ok(Some((item, n))) => {
+                    self.parse_location += n;
+                    return Some(item);
+                }
+                // Handle incomplete parse
+                Ok(None) => {
+                    // Partial buffer not enough, shift existing and fill
+                    if self.parse_location != 0 {
+                        match self.resize_no_alloc() {
+
+                            Ok(r) => {
+                                // EOF
+                                if let Some(last) = r {
+                                    match (self.parse_fn)(&last, true) {
+                                        Ok(Some((item, _))) => return Some(item),
+                                        _ => return None,
                                     }
                                 }
-                                Err(_) => return None,
                             }
-                        } else {
-                            match self.resize_alloc() {
-                                Ok(r) => {
-                                    if let Some(last) = r {
-                                        match (self.parse_fn)(&last, true) {
-                                            Ok(Some((item, _))) => return Some(item),
-                                            _ => return None,
-                                        }
+                            Err(e) => eprintln!("Error while resizing: {:?}", e),
+                        }
+                    // Entire buffer not enough, increase buffer size and refill
+                    } else {
+                        match self.resize_alloc() {
+                            Ok(r) => {
+                                // EOF
+                                if let Some(last) = r {
+                                    match (self.parse_fn)(&last, true) {
+                                        Ok(Some((item, _))) => return Some(item),
+                                        _ => return None,
                                     }
                                 }
-                                Err(_) => return None,
                             }
+                            Err(e) => eprintln!("Error while resizing: {:?}", e),
                         }
                     }
-                },
+                }
                 Err(e) => {
-                    eprintln!("Parse Error: {:?}", e);
+                    eprintln!("Error while parsing: {:?}", e);
                     return None;
                 }
             }

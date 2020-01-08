@@ -20,7 +20,7 @@ for packet in &muncher {
 use anyhow::Error;
 use std::io::Read;
 
-/// Output type for `ReadMuncher` parse function
+/// Output type for `ByteMuncher` parse function
 pub enum MunchOutput<T> {
     /// Successful parse.
     /// 
@@ -31,29 +31,30 @@ pub enum MunchOutput<T> {
     Incomplete
 }
 
-/** Continuously reads bytes from a `Read` implementor,
- parses that byte stream with the provided parser function,
- and provides an iterator over the parsed slices/packets/frames.
+/** 
+Continuously reads bytes from a byte iterator, 
+parses that byte stream with the user-provided parser function,
+and provides an iterator over the parsed slices/packets/frames.
 
 ```rust
 use noodle::*;
 
-let bytes = vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3];
+let bytes = Box::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3].into_iter());
 
-let munched: Vec<Vec<u8>> = ByteMuncher::new(Box::new(bytes.into_iter()), 5, |b, _| {
-    if b.len() >= 2 {
-        let skip = b[1] as usize + 1;
-        if b.len() > skip {
-            let blob = &b[..skip];
-            Ok(MunchOutput::Found(blob.to_owned(), skip))
+let munched: Vec<Vec<u8>> = ByteMuncher::new(bytes, 5, |b, _| {
+        if b.len() >= 2 {
+            let skip = b[1] as usize + 1;
+            if b.len() > skip {
+                let blob = &b[..skip];
+                Ok(MunchOutput::Found(blob.to_owned(), skip))
+            } else {
+                Ok(MunchOutput::Incomplete)
+            }
         } else {
             Ok(MunchOutput::Incomplete)
         }
-    } else {
-        Ok(MunchOutput::Incomplete)
-    }
-})
-.collect();
+    })
+    .collect();
 
 assert_eq!(munched.len(), 3);
 assert_eq!(munched[0], vec![0xff, 1]);

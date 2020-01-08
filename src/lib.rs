@@ -21,34 +21,36 @@ use anyhow::Error;
 use std::io::Read;
 
 /// Output type for `ReadMuncher` parse function
-/// 
-/// `T` is the iterator output type (e.g. `Packet` or `Frame` structs).
-/// 
-/// `usize` is the number of bytes consumed to created the output type.
-pub type MunchOutput<T> = Option<(T, usize)>;
+pub enum MunchOutput<T> {
+    /// Successful parse.
+    /// 
+    /// * `T` - parsed object.
+    /// * `usize` - number of bytes consumed to parse object.
+    Found(T, usize),
+    /// Insufficient number of bytes for complete parse.
+    Incomplete
+}
 
 /** Continuously reads bytes from a `Read` implementor,
  parses that byte stream with the provided parser function,
  and provides an iterator over the parsed slices/packets/frames.
 
 ```rust
-# use noodle::ReadMuncher;
+use noodle::*;
 
-use std::io::Cursor;
+let bytes = vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3];
 
-let mut read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
-
-let munched: Vec<Vec<u8>> = ReadMuncher::new(&mut read, 5, |b, _| {
+let munched: Vec<Vec<u8>> = ByteMuncher::new(Box::new(bytes.into_iter()), 5, |b, _| {
     if b.len() >= 2 {
         let skip = b[1] as usize + 1;
         if b.len() > skip {
             let blob = &b[..skip];
-            Ok(Some((blob.to_owned(), skip)))
+            Ok(MunchOutput::Found(blob.to_owned(), skip))
         } else {
-            Ok(None)
+            Ok(MunchOutput::Incomplete)
         }
     } else {
-        Ok(None)
+        Ok(MunchOutput::Incomplete)
     }
 })
 .collect();
@@ -79,9 +81,11 @@ where
 {
     /// Creates a new `ByteMuncher` instance from a boxed byte iterator.
     ///
+    /// # Parameters
+    /// 
     /// ### source
     ///
-    /// The boxed `Iterator<Item = u8>` object used a bytes source.
+    /// The boxed iterator used to source bytes.
     ///
     /// ### alloc_size
     ///
@@ -100,13 +104,18 @@ where
     ///
     /// ```ignore
     ///
-    /// Ok(Some((item, 12)))  // 'item' is returned, buffer drains 12 bytes
+    /// Ok(MunchOutput::Found(item, 12))  // 'item' is returned, buffer drains 12 bytes
     ///
-    /// Ok(None)  // Not enough bytes, keep trying
+    /// Ok(MunchOutput::Incomplete)  // Not enough bytes, keep trying
     ///
     /// Err(...)  // Error occurred. Iterator panics and prints to stderr
     ///
     /// ```
+    /// 
+    /// # Panic
+    /// 
+    /// If the parse function returns `Err` during iteration, `ByteMuncher` will panic and print the error to stderr.
+    /// 
     pub fn new(source: Box<dyn Iterator<Item = u8>>, alloc_size: usize, parse_fn: F) -> Self 
      {
         Self {
@@ -121,6 +130,18 @@ where
     }
 
     /// Creates a new `ByteMuncher` from a boxed `Read` object.
+    /// 
+    /// # Parameters
+    /// 
+    /// ### source
+    /// 
+    /// A boxed `Read` object, used for sourcing bytes.
+    /// 
+    /// # Panic
+    /// 
+    /// Since it uses `io::Bytes` internally, which returns `Result<u8, Error>`, 
+    /// this iterator will panic on read error.
+    /// 
     pub fn from_read(source: Box<dyn Read>, alloc_size: usize, parse_fn: F) -> Self {
         Self::new(
             Box::new(source.bytes().map(|r| r.unwrap())),
@@ -136,9 +157,6 @@ where
         self.buffer.drain(0..self.parse_location);
         self.buffer.resize_with(full_len, || 0);
         self.read_end_location -= self.parse_location;
-        // let num_new_bytes = self
-        //     .reader
-        //     .read(&mut self.buffer[(full_len - self.parse_location)..])?;
         let mut num_new_bytes = 0;
         for i in (&mut self.buffer[(full_len - self.parse_location)..]).iter_mut() {
             match self.source.next() {
@@ -165,7 +183,6 @@ where
     fn resize_alloc(&mut self) -> Result<Option<Vec<u8>>, Error> {
         let old_len = self.buffer.len();
         self.buffer.resize_with(old_len + self.alloc_size, || 0);
-        // let num_new_bytes = self.reader.read(&mut self.buffer[old_len..])?;
         let mut num_new_bytes = 0;
         for i in (&mut self.buffer[old_len..]).iter_mut() {
             match self.source.next() {
@@ -201,12 +218,12 @@ where
             let parse_result = (self.parse_fn)(&self.buffer[self.parse_location..], false);
             match parse_result {
                 // Complete parse
-                Ok(Some((item, n))) => {
+                Ok(MunchOutput::Found(item, n)) => {
                     self.parse_location += n;
                     return Some(item);
                 }
                 // Handle incomplete parse
-                Ok(None) => {
+                Ok(MunchOutput::Incomplete) => {
                     // Partial buffer not enough, shift existing and fill
                     if self.parse_location != 0 {
                         match self.resize_no_alloc() {
@@ -215,7 +232,7 @@ where
                                 // EOF
                                 if let Some(last) = r {
                                     match (self.parse_fn)(&last, true) {
-                                        Ok(Some((item, _))) => return Some(item),
+                                        Ok(MunchOutput::Found(item, _)) => return Some(item),
                                         _ => return None,
                                     }
                                 }
@@ -229,7 +246,7 @@ where
                                 // EOF
                                 if let Some(last) = r {
                                     match (self.parse_fn)(&last, true) {
-                                        Ok(Some((item, _))) => return Some(item),
+                                        Ok(MunchOutput::Found(item, _)) => return Some(item),
                                         _ => return None,
                                     }
                                 }
@@ -260,12 +277,12 @@ mod test {
                 let skip = bytes[1] as usize + 1;
                 if bytes.len() > skip {
                     let blob = &bytes[..skip];
-                    Ok(Some((blob.to_owned(), skip)))
+                    Ok(MunchOutput::Found(blob.to_owned(), skip))
                 } else {
-                    Ok(None)
+                    Ok(MunchOutput::Incomplete)
                 }
             } else {
-                Ok(None)
+                Ok(MunchOutput::Incomplete)
             }
         }
 
@@ -282,7 +299,6 @@ mod test {
     /// Tests passing closure as parser function.
     #[test]
     pub fn closure() {
-
         let read = vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3];
 
         let munched: Vec<Vec<u8>> = ByteMuncher::new(Box::new(read.into_iter()), 5, |b, _| {
@@ -290,12 +306,12 @@ mod test {
                 let skip = b[1] as usize + 1;
                 if b.len() > skip {
                     let blob = &b[..skip];
-                    Ok(Some((blob.to_owned(), skip)))
+                    Ok(MunchOutput::Found(blob.to_owned(), skip))
                 } else {
-                    Ok(None)
+                    Ok(MunchOutput::Incomplete)
                 }
             } else {
-                Ok(None)
+                Ok(MunchOutput::Incomplete)
             }
         })
         .collect();
@@ -319,12 +335,12 @@ mod test {
                 let skip = b[1] as usize + 1;
                 if b.len() > skip {
                     let blob = &b[..skip];
-                    Ok(Some((blob.to_owned(), skip)))
+                    Ok(MunchOutput::Found(blob.to_owned(), skip))
                 } else {
-                    Ok(None)
+                    Ok(MunchOutput::Incomplete)
                 }
             } else {
-                Ok(None)
+                Ok(MunchOutput::Incomplete)
             }
         })
         .collect();

@@ -23,16 +23,16 @@ use std::io::Read;
 /// Output type for `ByteMuncher` parse function
 pub enum MunchOutput<T> {
     /// Successful parse.
-    /// 
+    ///
     /// * `T` - parsed object.
     /// * `usize` - number of bytes consumed to parse object.
     Found(T, usize),
     /// Insufficient number of bytes for complete parse.
-    Incomplete
+    Incomplete,
 }
 
-/** 
-Continuously reads bytes from a byte iterator, 
+/**
+Continuously reads bytes from a byte iterator,
 parses that byte stream with the user-provided parser function,
 and provides an iterator over the parsed slices/packets/frames.
 
@@ -83,7 +83,7 @@ where
     /// Creates a new `ByteMuncher` instance from a boxed byte iterator.
     ///
     /// # Parameters
-    /// 
+    ///
     /// ### source
     ///
     /// The boxed iterator used to source bytes.
@@ -112,13 +112,12 @@ where
     /// Err(...)  // Error occurred. Iterator panics and prints to stderr
     ///
     /// ```
-    /// 
+    ///
     /// # Panic
-    /// 
+    ///
     /// If the parse function returns `Err` during iteration, `ByteMuncher` will panic and print the error to stderr.
-    /// 
-    pub fn new(source: Box<dyn Iterator<Item = u8>>, alloc_size: usize, parse_fn: F) -> Self 
-     {
+    ///
+    pub fn new(source: Box<dyn Iterator<Item = u8>>, alloc_size: usize, parse_fn: F) -> Self {
         Self {
             source,
             alloc_size,
@@ -131,23 +130,23 @@ where
     }
 
     /// Creates a new `ByteMuncher` from a boxed `Read` object.
-    /// 
+    ///
     /// # Parameters
-    /// 
+    ///
     /// ### source
-    /// 
+    ///
     /// A boxed `Read` object, used for sourcing bytes.
-    /// 
+    ///
     /// # Panic
-    /// 
-    /// Since it uses `io::Bytes` internally, which returns `Result<u8, Error>`, 
+    ///
+    /// Since it uses `io::Bytes` internally, which returns `Result<u8, Error>`,
     /// this iterator will panic on read error.
-    /// 
+    ///
     pub fn from_read(source: Box<dyn Read>, alloc_size: usize, parse_fn: F) -> Self {
         Self::new(
             Box::new(source.bytes().map(|r| r.unwrap())),
             alloc_size,
-            parse_fn
+            parse_fn,
         )
     }
 
@@ -157,14 +156,18 @@ where
         let full_len = self.buffer.len();
         self.buffer.drain(0..self.parse_location);
         self.buffer.resize_with(full_len, || 0);
-        self.read_end_location -= self.parse_location;
+        if self.parse_location <= self.read_end_location {
+            self.read_end_location -= self.parse_location;
+        } else {
+            self.read_end_location = 0;
+        }
         let mut num_new_bytes = 0;
         for i in (&mut self.buffer[(full_len - self.parse_location)..]).iter_mut() {
             match self.source.next() {
                 Some(b) => {
                     *i = b;
                     num_new_bytes += 1;
-                },
+                }
                 None => continue,
             }
         }
@@ -190,7 +193,7 @@ where
                 Some(b) => {
                     *i = b;
                     num_new_bytes += 1;
-                },
+                }
                 None => continue,
             }
         }
@@ -228,7 +231,6 @@ where
                     // Partial buffer not enough, shift existing and fill
                     if self.parse_location != 0 {
                         match self.resize_no_alloc() {
-
                             Ok(r) => {
                                 // EOF
                                 if let Some(last) = r {
@@ -268,11 +270,12 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::fs::File;
+    use std::io::Read;
 
     /// Tests passing static function as parser.
     #[test]
     pub fn static_fn() {
-
         fn my_parse_function(bytes: &[u8], _: bool) -> Result<MunchOutput<Vec<u8>>, Error> {
             if bytes.len() >= 2 {
                 let skip = bytes[1] as usize + 1;
@@ -289,7 +292,8 @@ mod test {
 
         let bytes = vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3];
 
-        let munched: Vec<Vec<u8>> = ByteMuncher::new(Box::new(bytes.into_iter()), 5, my_parse_function).collect();
+        let munched: Vec<Vec<u8>> =
+            ByteMuncher::new(Box::new(bytes.into_iter()), 5, my_parse_function).collect();
 
         assert_eq!(munched.len(), 3);
         assert_eq!(munched[0], vec![0xff, 1]);
@@ -326,9 +330,8 @@ mod test {
     /// Test using Read as source.
     #[test]
     pub fn read() {
-
         use std::io::Cursor;
-        
+
         let read = Cursor::new(vec![0xff, 1, 0xff, 2, 2, 0xff, 3, 3, 3]);
 
         let munched: Vec<Vec<u8>> = ByteMuncher::from_read(Box::new(read), 5, |b, _| {
